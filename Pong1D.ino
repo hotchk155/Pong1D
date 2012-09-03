@@ -6,24 +6,29 @@ void gameEvent(int event);
 
 
 #define STRIP_LEN 50
+#define POS_A 0
+#define POS_B 49
 sd600 strip(STRIP_LEN);
 unsigned long track[STRIP_LEN];
 
-#define VEL_1  0.2
-#define VEL_2  0.4
-#define VEL_3  0.6
-#define VEL_4  0.8
-#define VEL_5  1.0
+#define SERVE_VELOCITY  0.2
 
 enum {
   GAME_BEGIN,
-  GAME_STARTROUND,
-  GAME_PLAYING,
-  GAME_PLAYER1DIE,
-  GAME_PLAYER2DIE,
-  GAME_WON,
+  GAME_SERVEA,
+  GAME_SERVEB,
+  GAME_RUNNING,
+  GAME_OVER
 };
 
+enum {
+  EVT_SWINGA,
+  EVT_SWINGB,
+  EVT_HITA,
+  EVT_HITB,
+  EVT_MISSA,
+  EVT_MISSB
+};
 ///////////////////////////////////////////////////////////////////////
 //
 //
@@ -244,61 +249,66 @@ class CPulse
   byte trail[STRIP_LEN];
   
   public:
-    float pos;
-    float velocity;
-    unsigned long colour;
-    unsigned long nextFadeTime;
+    float m_pos;
+    float m_velocity;
+    unsigned long m_nextFadeTime;
     
     CPulse() {
-      pos = 0;
-      velocity = VEL_1;
-      colour = 0xfffffeL;
+      m_pos = 0;
+      m_velocity = 0;
       memset(trail,0,sizeof(trail));
-      reset(random(10) > random(10));
+      m_nextFadeTime = 0;
     }
-    void reset(boolean atEnd) {
-      if(atEnd)
-      {
-        pos = 49;
-        velocity = -VEL_1;      
-      }
-      else
-      {
-        pos = 0;
-        velocity = VEL_1;      
-      }
+    void init(byte newPos, float newVelocity) 
+    {
+        memset(trail, 0, sizeof(trail));
+        m_pos = newPos;
+        m_velocity = newVelocity;      
+    }
+    void reverse(float factor) 
+    {
+      m_velocity *= factor;
+    }
+    void pulsate(byte pos, unsigned long milliseconds)
+    {
+        if(milliseconds > m_nextFadeTime) 
+        {
+          byte q = 128.0 + 126.0 * sin(m_pos);
+          track[(int)pos] = RGB(q,q,q);              
+          m_pos += 0.1;
+          m_nextFadeTime = milliseconds + 10;
+        }
     }
     void run(unsigned long milliseconds)
     {
-        if(milliseconds > nextFadeTime) 
+        if(milliseconds > m_nextFadeTime) 
         {
           for(int i=0; i<STRIP_LEN; ++i) {
             trail[i] /= 2;
           }
-          nextFadeTime = milliseconds + FADE_PERIOD;
+          m_nextFadeTime = milliseconds + FADE_PERIOD;
         }
         
-        int oldPos = (pos + 0.5);
-        pos += velocity;
-        if(pos < 0) {
-          gameEvent(GAME_PLAYER1DIE);
-          velocity=-velocity;
-          pos = 0;
+        int oldPos = (m_pos + 0.5);
+        m_pos += m_velocity;
+        if(m_pos < 0) {
+reverse(-1);
+//          gameEvent(EVT_MISSB);
+          m_pos = 0;
         }
-        else if(pos >= STRIP_LEN-1) {
-          gameEvent(GAME_PLAYER2DIE);
-          pos = STRIP_LEN - 1;
-          velocity=-velocity;
+        else if(m_pos >= STRIP_LEN-1) {
+          gameEvent(EVT_MISSA);
+          m_pos = STRIP_LEN - 1;
         }       
         
         for(int i=0; i<STRIP_LEN; ++i)
           track[i] = RGB(trail[i],0,0);
-        trail[(int)pos] = 10;
-        track[(int)pos] = 0xfefefe;        
+        trail[(int)m_pos] = 10;
+        track[(int)m_pos] = 0xfefefeL;        
     }
 
     int intPos() {
-      return (int)(pos + 0.5);
+      return (int)(m_pos + 0.5);
     }    
 };
 CPulse Pulse;
@@ -320,117 +330,105 @@ CPulse Pulse;
 ///////////////////////////////////////////////////////////////////////
 
 enum {
-   B_NONE,
-   B_1UP,
-   B_2UP,
-   B_3UP,
-   B_4UP,
-   B_5UP,
-   B_5DN,
-   B_4DN,
-   B_3DN,
-   B_2DN,
-   B_1DN,
-   B_0DN
+   BAT_WAIT,
+   BAT_RISE,
+   BAT_FALL,
+   BAT_RELEASE
 };
 
-#define SWITCH_A 15
-#define SWITCH_B 14
+#define SWITCH_A 14
+#define SWITCH_B 15
 
 #define BAT_RISE_DELAY 10
 #define BAT_FALL_DELAY 50
 
+#define BAT_SIZE 5
+
 class CBat {
-  byte m_pos1;
-  byte m_pos2;
-  byte m_pos3;
-  byte m_pos4;
-  byte m_pos5;
+  byte m_start;
+  byte m_end;
   byte m_state;
   byte m_pin;
+  byte m_pos;
   unsigned long m_nextEvent;
   unsigned long m_colour;
 public:
-  CBat(byte pos1, byte pos2, byte pos3, byte pos4, byte pos5, byte pin, unsigned long colour)
+  CBat(byte startPos, byte endPos, byte inputPin, unsigned long colour)
   {
-    m_pos1 = pos1;
-    m_pos2 = pos2;
-    m_pos3 = pos3;
-    m_pos4 = pos4;
-    m_pos5 = pos5;
-    m_state = B_NONE;
-    m_pin = pin;
+    m_start = startPos;
+    m_end = endPos;
+    m_pos = startPos;
+    m_state = BAT_WAIT;
+    m_pin = inputPin;
     m_nextEvent = 0;
     m_colour = colour;
     pinMode(m_pin, INPUT);
     digitalWrite(m_pin, HIGH);
   }
   
-  void run(unsigned long milliseconds, CPulse *pPulse)
+  void run(byte which, unsigned long milliseconds, CPulse *pPulse)
   {
-    int pos;
+    int pulsePos = pPulse->intPos();
     switch(m_state) 
     {
-       case B_NONE:
+       case BAT_WAIT:
          if(digitalRead(m_pin) == HIGH)
-           break;           
-         pos = pPulse->intPos();
-         
-         if(pos == m_pos1 || pos == m_pos2 || pos == m_pos3 || pos == m_pos4 || pos == m_pos5)
-         {
-           Sounds.begin(sound_bat);
-           pPulse->velocity *= -1.05;
+           break;   
+         gameEvent(which? EVT_SWINGA : EVT_SWINGB);
+         m_state = BAT_RISE;
+       case BAT_RISE:
+         if(milliseconds < m_nextEvent)
+           break;
+         if(m_end > m_pos) {
+           m_pos++;
+         } else {
+           m_pos--;
          }
-         m_nextEvent = 0;
-       case B_1UP:
-       case B_2UP:
-       case B_3UP:
-       case B_4UP:
-       case B_5UP:
-         if(milliseconds < m_nextEvent)
-           break;
+         if(which)
+         {
+           if(pulsePos <= m_end)         
+             gameEvent(EVT_HITB);
+         }
+         else 
+         {
+           if(pulsePos >= m_end)         
+             gameEvent(EVT_HITA);
+         }
+         if(m_pos == m_end)
+           m_state = BAT_FALL;           
          m_nextEvent = milliseconds + BAT_RISE_DELAY;
-         m_state++;
-         break;                 
-       case B_5DN:
-       case B_4DN:
-       case B_3DN:
-       case B_2DN:
-       case B_1DN:
+         break;
+       case BAT_FALL:
          if(milliseconds < m_nextEvent)
            break;
+         if(m_start < m_pos) {
+           m_pos--;
+         } else {
+           m_pos++;
+         }
+         if(m_pos == m_start)
+           m_state = BAT_RELEASE;           
          m_nextEvent = milliseconds + BAT_FALL_DELAY;
-         ++m_state;
          break;
-       case B_0DN:
-         if(digitalRead(m_pin) == LOW)
-           break;           
-         m_state = B_NONE;      
-
+      case BAT_RELEASE:
+        if(digitalRead(m_pin) == HIGH)
+          m_state = BAT_WAIT;      
     }
     
-    switch(m_state)
-    {
-       case B_5UP:
-       case B_5DN:
-         track[m_pos5] = m_colour;
-       case B_4UP:
-       case B_4DN:
-         track[m_pos4] = m_colour;
-       case B_3UP:
-       case B_3DN:
-         track[m_pos3] = m_colour;
-       case B_2UP:
-       case B_2DN:
-         track[m_pos2] = m_colour;
-       case B_1UP:
-       case B_1DN:
-         track[m_pos1] = m_colour;
+    int pos = m_start;
+    for(;;) {      
+         track[pos] = m_colour;
+         if(pos < m_pos) 
+           pos++;
+         else if(pos > m_pos)
+           pos--;
+         else
+           break;
     }
   }
 };
-CBat BatA(49,48,47,46,45,SWITCH_A,RGB(0,0,254));
-CBat BatB(0,1,2,3,4,SWITCH_B,RGB(0,254,0));
+CBat Bat0(0,5,SWITCH_A,RGB(0,254,0));
+CBat Bat1(49,44,SWITCH_B,RGB(0,0,254));
 
 ///////////////////////////////////////////////////////////////////////
 //
@@ -497,10 +495,6 @@ int q=0;
 byte dd =0;
 
 int gameState = 0;
-void gameEvent(int event)
-{
-  gameState = event;
-}
 
 void refreshScores()
 {
@@ -515,27 +509,56 @@ void setup()
   pinMode(P_LED,OUTPUT);
   digitalWrite(P_LED,LOW);  
   delay(10);
-strip.begin();
-speaker.begin(19);
-//  Serial.begin(9600);
-//  SD600.setLed(0, RGB(255,0,0));
-
-int q = 0;
-/*for(;;)
-{
-speaker.play(1400,50);
-  SevenSegs.showNumber(0, q++);
-  SevenSegs.showNumber(1, 99-q);
-  delay(1000);  
-}*/
-  Player1Score = 0;
-  Player2Score = 0;
-  refreshScores();
-//Sounds.begin(sound1);
+  strip.begin();
+  speaker.begin(19);
 }
 
 #define MAX_SCORE 15
 unsigned long gameDelay = 0;
+
+void gameEvent(int event)
+{
+  switch(event) {
+    case EVT_SWINGA:
+      if(gameState == GAME_SERVEA) {
+        Sounds.begin(sound_bat);
+        Pulse.init(48, -SERVE_VELOCITY);
+        gameState = GAME_RUNNING;
+      }
+      break;
+    case EVT_SWINGB:
+      if(gameState == GAME_SERVEB) {
+        Sounds.begin(sound_bat);
+        Pulse.init(1, SERVE_VELOCITY);
+        gameState = GAME_RUNNING;
+      }      
+      break;
+    case EVT_HITA:
+    case EVT_HITB:
+      Sounds.begin(sound_bat);
+      Pulse.reverse(1.05);
+      break;
+    case EVT_MISSA:
+        Player2Score++;    
+        refreshScores();
+        if(Player2Score >= MAX_SCORE)
+          gameState = GAME_OVER;
+        else      
+          gameState = GAME_SERVEA;//B
+        Sounds.begin(sound_die);
+        break;
+    case EVT_MISSB:
+        Player1Score++;    
+        refreshScores();
+        if(Player1Score >= MAX_SCORE)
+          gameState = GAME_OVER;
+        else      
+          gameState = GAME_SERVEA;
+        Sounds.begin(sound_die);
+        break;
+  }
+}
+
 void loop()
 {
   memset(track, 0, sizeof(track));
@@ -545,40 +568,31 @@ void loop()
   {
     switch(gameState)
     {
+      // initial state on reset
       case GAME_BEGIN:
-        gameState = GAME_STARTROUND;
+        Player1Score = 0;
+        Player2Score = 0;
+        refreshScores();
+        gameState = GAME_SERVEA;        
         break;
-      case GAME_STARTROUND:
-        gameState = GAME_PLAYING;
-        break;
-      case GAME_PLAYING:
+      
+      // state just before play starts
+      case GAME_SERVEA:
+        Bat0.run(0, milliseconds, &Pulse);      
+        Bat1.run(1, milliseconds, &Pulse);      
+        Pulse.pulsate(48, milliseconds);
+        break;        
+      case GAME_SERVEB:
+        Bat0.run(0, milliseconds, &Pulse);      
+        Bat1.run(1, milliseconds, &Pulse);      
+        Pulse.pulsate(1, milliseconds);
+        break;        
+      case GAME_RUNNING:
         Pulse.run(milliseconds);
-        BatA.run(milliseconds, &Pulse);      
-        BatB.run(milliseconds, &Pulse);      
+        Bat0.run(0, milliseconds, &Pulse);      
+        Bat1.run(1, milliseconds, &Pulse);      
         break;
-      case GAME_PLAYER1DIE:
-        Player2Score++;    
-        refreshScores();
-        if(Player2Score >= MAX_SCORE)
-          gameState = GAME_WON;
-        else      
-          gameState = GAME_STARTROUND;
-        Sounds.begin(sound_die);
-        gameDelay = milliseconds + 2000;
-        Pulse.reset(true);
-        break;
-      case GAME_PLAYER2DIE:
-        Player1Score++;    
-        refreshScores();
-        if(Player1Score >= MAX_SCORE)
-          gameState = GAME_WON;
-        else      
-          gameState = GAME_STARTROUND;
-        Sounds.begin(sound_die);
-        gameDelay = milliseconds + 2000;
-        Pulse.reset(false);
-        break;
-      case GAME_WON:
+      case GAME_OVER:
         break;
     }
   }
