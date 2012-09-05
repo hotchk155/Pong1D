@@ -1,152 +1,31 @@
-#include "sd600.h"
+
+#include "Arduino.h"
+#include "EEPROM.h"
 #include "Tone.h"
+#include "sd600.h"
+#include "HeartBeat.h"
+#include "SevenSegs.h"
 
-void gameEvent(int event);
+#define P_LIGHTS1  9
+#define P_LIGHTS2  10
 
-
+// heartbeat LED
+#define P_LED 18
+CHeartBeat HeartBeat(P_LED);
 
 #define STRIP_LEN 50
-#define POS_A 0
-#define POS_B 49
 sd600 strip(STRIP_LEN);
-unsigned long track[STRIP_LEN];
 
-#define SERVE_VELOCITY  0.2
+#define GAME_SERVE_VELOCITY 0.3
+#define GAME_ACCELERATION 1.05
+#define GAME_MAX_SCORE 15
 
-enum {
-  GAME_BEGIN,
-  GAME_SERVEA,
-  GAME_SERVEB,
-  GAME_RUNNING,
-  GAME_OVER
-};
-
-enum {
-  EVT_SWINGA,
-  EVT_SWINGB,
-  EVT_HITA,
-  EVT_HITB,
-  EVT_MISSA,
-  EVT_MISSB
-};
-///////////////////////////////////////////////////////////////////////
-//
-//
-//
-//
-//
-//
-// SEVEN SEGMENT DISPLAYS
-//
-//
-//
-//
-//
-//
-///////////////////////////////////////////////////////////////////////
-
-#define P_7SEGS_DAT0    6
-#define P_7SEGS_DAT1    5
-#define P_7SEGS_SHCLK   7
-#define P_7SEGS_STCLK   8
-
-/*
-   +-a-+
-  f|   |b
-   +-g-+
-  e|   |c
-   +-d-+.dp
-*/
-#define SEG_A    0x40
-#define SEG_B    0x80
-#define SEG_C    0x04
-#define SEG_D    0x02
-#define SEG_E    0x01
-#define SEG_F    0x10
-#define SEG_G    0x08
-#define SEG_DP   0x20
-
-#define DIGIT_0 (SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F)
-#define DIGIT_1 (SEG_B|SEG_C)
-#define DIGIT_2 (SEG_A|SEG_B|SEG_G|SEG_E|SEG_D)
-#define DIGIT_3 (SEG_A|SEG_B|SEG_C|SEG_D|SEG_G)
-#define DIGIT_4 (SEG_B|SEG_C|SEG_F|SEG_G)
-#define DIGIT_5 (SEG_A|SEG_C|SEG_D|SEG_F|SEG_G)
-#define DIGIT_6 (SEG_A|SEG_C|SEG_D|SEG_E|SEG_F|SEG_G)
-#define DIGIT_7 (SEG_A|SEG_B|SEG_C)
-#define DIGIT_8 (SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F|SEG_G)
-#define DIGIT_9 (SEG_A|SEG_B|SEG_C|SEG_D|SEG_F|SEG_G)
-
-class C7Segs
-{
-  byte m_shclk;
-  byte m_stclk; 
-  byte m_dat0;
-  byte m_dat1;
-  
-  unsigned int  m_leds0;
-  unsigned int  m_leds1;
-public:  
-  C7Segs(byte shclk, byte stclk, byte dat0, byte dat1) {
-    m_shclk = shclk;
-    m_stclk = stclk;
-    m_dat0 = dat0;
-    m_dat1 = dat1;
-    
-    pinMode(shclk, OUTPUT);
-    pinMode(stclk, OUTPUT);
-    pinMode(dat0, OUTPUT);
-    pinMode(dat1, OUTPUT);
-    
-    m_leds0 = 0;
-    m_leds1 = 0;    
-    refresh();
-  }
-  
-  void refresh() {
-    digitalWrite(m_stclk, LOW);  
-    unsigned int  m = 0x8000;
-    while(m > 0)
-    {
-      digitalWrite(m_shclk, LOW);  
-      digitalWrite(m_dat0, !!(m_leds0 & m));  
-      digitalWrite(m_dat1, !!(m_leds1 & m));  
-      digitalWrite(m_shclk, HIGH);        
-      m>>=1;
-    }
-    digitalWrite(m_stclk, HIGH);  
-  }
-  
-  void showRaw(byte which, byte left, byte right) {
-    unsigned int value = ((unsigned int)left<<8)|right;
-    if(which) 
-      m_leds1 = value;
-    else
-      m_leds0 = value;
-    refresh();
-  }
-  
-  byte digitLookup(byte digit) {
-    switch(digit) {
-      case 0: return DIGIT_0;
-      case 1: return DIGIT_1;
-      case 2: return DIGIT_2;
-      case 3: return DIGIT_3;
-      case 4: return DIGIT_4;
-      case 5: return DIGIT_5;
-      case 6: return DIGIT_6;
-      case 7: return DIGIT_7;
-      case 8: return DIGIT_8;
-      case 9: return DIGIT_9;
-    }
-    return 0;
-  }
-  void showNumber(byte which, int value) {
-    value %= 100;
-    showRaw(which, digitLookup(value/10), digitLookup(value%10));
-  } 
-};
-C7Segs SevenSegs(P_7SEGS_SHCLK, P_7SEGS_STCLK, P_7SEGS_DAT0, P_7SEGS_DAT1);
+byte gameScorePlayer1;
+byte gameScorePlayer2;
+int gameState;
+byte gameCurrentServer;
+byte gameStarted;
+byte gameRallyLen;
 
 
 ///////////////////////////////////////////////////////////////////////
@@ -166,25 +45,30 @@ C7Segs SevenSegs(P_7SEGS_SHCLK, P_7SEGS_STCLK, P_7SEGS_DAT0, P_7SEGS_DAT1);
 ///////////////////////////////////////////////////////////////////////
 Tone speaker;
 
-int sound1[] = {
-  256, 100,
-  512, 100,
-  256, 100,
-  512, 100,
-  256, 100,
-  512, 100,
-  256, 100,
-  512, 100,
-  0
-};
-
-int sound_bat[] = {
+int SOUND_SWING[] = {
   256, 10,
   512, 10,
   0
 };
-
-int sound_die[] = {
+int SOUND_SERVE[] = {
+  256, 10,
+  512, 10,
+  0
+};
+int SOUND_RETURN[] = {
+  256, 10,
+  512, 10,
+  0
+};
+int SOUND_MISS[] = {
+  100, 100,
+  200, 50,
+  100, 100,
+  200, 50,
+  100, 200,
+  0
+};
+int SOUND_GAME_OVER[] = {
   500, 200,
   400, 200,
   300, 200,
@@ -193,141 +77,169 @@ int sound_die[] = {
   0
 };
 
-class CSound 
+unsigned long soundNextEvent;
+int *soundPos;
+
+void soundInit() 
 {
-  unsigned long nextEvent;
-  int *pos;
- public:
-  CSound() {
-    pos = 0;
-    nextEvent = 0;
-  }
-  void begin(int* sound) {
-    pos = sound;
-    nextEvent = 0;
-  }
-  void run(unsigned int milliseconds)
+  soundNextEvent = 0;
+  soundPos = NULL;
+}
+
+void soundStart(int* pos) 
+{
+    soundPos = pos;
+    soundNextEvent = 0;
+}
+
+int soundRun(unsigned int milliseconds)
+{
+  if(milliseconds > soundNextEvent)
   {
-    if(milliseconds > nextEvent)
+    if(soundPos && *soundPos) 
     {
-      if(pos && *pos) 
-      {
-        speaker.play(*pos);
-        ++pos;
-        nextEvent = milliseconds + *pos;
-        ++pos;
-      }
-      else if(pos)
-      {
-        speaker.stop();
-        pos = 0;
-      }
+      speaker.play(*soundPos);
+      ++soundPos;
+      soundNextEvent = milliseconds + *soundPos;
+      ++soundPos;
+      return 0;
     }
-  }   
+    else if(soundPos)
+    {
+      speaker.stop();
+      soundPos = NULL;
+      return 1;
+    }
+  }
+}
+
+
+// define 7 segment displays
+#define P_7SEGS_DAT0    6
+#define P_7SEGS_DAT1    5
+#define P_7SEGS_SHCLK   7
+#define P_7SEGS_STCLK   8
+C7Segs SevenSegs(P_7SEGS_SHCLK, P_7SEGS_STCLK, P_7SEGS_DAT0, P_7SEGS_DAT1);
+
+
+
+// states of the game
+enum {
+  STATE_BEFORE_SERVE,
+  STATE_ANIM_BEFORE_SERVE,
+  STATE_WAIT_FOR_SERVE,
+  STATE_PLAY,
+  STATE_MISS,
+  STATE_ANIM_MISS,
+  STATE_GAME_OVER
 };
-CSound Sounds;
+
+enum {
+  EVENT_NONE,
+  EVENT_SWING,
+  EVENT_HIT,
+  EVENT_MISS
+};
 
 
-///////////////////////////////////////////////////////////////////////
-//
-//
-//
-//
-//
-//
-// PULSE
-//
-//
-//
-//
-//
-//
-///////////////////////////////////////////////////////////////////////
-#define FADE_PERIOD 100
-class CPulse 
+
+unsigned long track[STRIP_LEN];
+byte pulseTrail[STRIP_LEN];
+
+#define PULSE_TRAIL_INTENSITY 10
+#define PULSE_TRAIL_FADE_MS 100
+#define PULSE_RUN_MS 10
+#define PULSATE_MS 1
+
+float pulsePos;
+float pulseVelocity;
+unsigned long trailNextEvent;
+unsigned long pulseNextEvent;
+unsigned long pulseColour;
+byte pulsateIntensity = 0;
+void pulseInit()
 {
-  byte trail[STRIP_LEN];
+  pulsePos = 0;
+  pulseVelocity = 0;
+  pulseNextEvent = 0;
+  trailNextEvent = 0;
+  pulseColour = RGB(0xff,0xff,0xff);
+}
+
+// Run the fading trail
+void trailRun(unsigned long milliseconds)
+{
+  // fade the trail
+  if(milliseconds >= trailNextEvent) 
+  {
+    for(int i=0; i<STRIP_LEN; ++i) 
+      pulseTrail[i] /= 2;
+    trailNextEvent = milliseconds + PULSE_TRAIL_FADE_MS;
+  }
+  for(int i=0; i<STRIP_LEN; ++i)
+    track[i] = RGB(pulseTrail[i],0,0);  
+}
+
+int pulseRun(unsigned long milliseconds)
+{
+
+  int result = EVENT_NONE;        
+  if(milliseconds >= pulseNextEvent) 
+  {
+    pulsePos += pulseVelocity;
+    if(pulsePos < 0.0) 
+    {
+      pulsePos = 0.0;
+      result = EVENT_MISS;
+    }
+    else if(pulsePos >= STRIP_LEN-1) 
+    {
+      pulsePos = STRIP_LEN - 1;
+      result = EVENT_MISS;      
+    }       
+    pulseNextEvent = milliseconds + PULSE_RUN_MS;
+  }        
+  pulseTrail[(int)pulsePos] = PULSE_TRAIL_INTENSITY;
+  track[(int)pulsePos] = pulseColour;        
+  return result;
+}
+
+int pulsate(unsigned long milliseconds)
+{
+  if(milliseconds >= pulseNextEvent)  
+  {
+    track[(int)pulsePos] =  RGB(pulsateIntensity, pulsateIntensity, pulsateIntensity);        
+    pulsateIntensity+=3;  
+    pulseNextEvent = milliseconds + PULSATE_MS;
+  }
+}
+
+#define BAT_SWITCH_A 14
+#define BAT_SWITCH_B 15
+
+class CBat
+{
+public:
+  byte startPos;
+  byte endPos;
+  byte pos;
+  byte state;
+  byte inputPin;
+  unsigned long nextEventTime;
+  unsigned long colour;
   
-  public:
-    float m_pos;
-    float m_velocity;
-    unsigned long m_nextFadeTime;
-    
-    CPulse() {
-      m_pos = 0;
-      m_velocity = 0;
-      memset(trail,0,sizeof(trail));
-      m_nextFadeTime = 0;
-    }
-    void init(byte newPos, float newVelocity) 
-    {
-        memset(trail, 0, sizeof(trail));
-        m_pos = newPos;
-        m_velocity = newVelocity;      
-    }
-    void reverse(float factor) 
-    {
-      m_velocity *= factor;
-    }
-    void pulsate(byte pos, unsigned long milliseconds)
-    {
-        if(milliseconds > m_nextFadeTime) 
-        {
-          byte q = 128.0 + 126.0 * sin(m_pos);
-          track[(int)pos] = RGB(q,q,q);              
-          m_pos += 0.1;
-          m_nextFadeTime = milliseconds + 10;
-        }
-    }
-    void run(unsigned long milliseconds)
-    {
-        if(milliseconds > m_nextFadeTime) 
-        {
-          for(int i=0; i<STRIP_LEN; ++i) {
-            trail[i] /= 2;
-          }
-          m_nextFadeTime = milliseconds + FADE_PERIOD;
-        }
-        
-        int oldPos = (m_pos + 0.5);
-        m_pos += m_velocity;
-        if(m_pos < 0) {
-reverse(-1);
-//          gameEvent(EVT_MISSB);
-          m_pos = 0;
-        }
-        else if(m_pos >= STRIP_LEN-1) {
-          gameEvent(EVT_MISSA);
-          m_pos = STRIP_LEN - 1;
-        }       
-        
-        for(int i=0; i<STRIP_LEN; ++i)
-          track[i] = RGB(trail[i],0,0);
-        trail[(int)m_pos] = 10;
-        track[(int)m_pos] = 0xfefefeL;        
-    }
-
-    int intPos() {
-      return (int)(m_pos + 0.5);
-    }    
+public:
+  CBat(byte start, byte end, byte pin, unsigned long col)
+  {
+    startPos = start;
+    endPos = end;
+    inputPin = pin;
+    colour = col;
+  }
 };
-CPulse Pulse;
 
-///////////////////////////////////////////////////////////////////////
-//
-//
-//
-//
-//
-//
-// BATS
-//
-//
-//
-//
-//
-//
-///////////////////////////////////////////////////////////////////////
+CBat Player1(0,5,BAT_SWITCH_A,RGB(0,254,0));
+CBat Player2(49,44,BAT_SWITCH_B,RGB(0,0,254));
 
 enum {
    BAT_WAIT,
@@ -336,136 +248,181 @@ enum {
    BAT_RELEASE
 };
 
-#define SWITCH_A 14
-#define SWITCH_B 15
 
 #define BAT_RISE_DELAY 10
 #define BAT_FALL_DELAY 50
 
 #define BAT_SIZE 5
 
-class CBat {
-  byte m_start;
-  byte m_end;
-  byte m_state;
-  byte m_pin;
-  byte m_pos;
-  unsigned long m_nextEvent;
-  unsigned long m_colour;
-public:
-  CBat(byte startPos, byte endPos, byte inputPin, unsigned long colour)
+
+void batInit(class CBat& Bat)
+{
+    pinMode(Bat.inputPin, INPUT);
+    digitalWrite(Bat.inputPin, HIGH);
+    Bat.pos = Bat.startPos;
+    Bat.state = BAT_WAIT;
+    Bat.nextEventTime = 0;
+}
+
+int batRun(class CBat& Bat, unsigned long milliseconds)
+{
+  int result = EVENT_NONE;
+  switch(Bat.state) 
   {
-    m_start = startPos;
-    m_end = endPos;
-    m_pos = startPos;
-    m_state = BAT_WAIT;
-    m_pin = inputPin;
-    m_nextEvent = 0;
-    m_colour = colour;
-    pinMode(m_pin, INPUT);
-    digitalWrite(m_pin, HIGH);
+     case BAT_WAIT:
+       if(digitalRead(Bat.inputPin) == HIGH)
+         break;   
+       result = EVENT_SWING;
+       Bat.state = BAT_RISE;
+       Bat.nextEventTime = 0;
+     case BAT_RISE:
+       if(milliseconds < Bat.nextEventTime)
+         break;
+       if(Bat.endPos > Bat.startPos) // Player 1
+       {           
+         Bat.pos++;
+         if(pulsePos <= Bat.pos && pulseVelocity <= 0)
+           result = EVENT_HIT;
+       }
+       else
+       {
+         Bat.pos--;
+         if(pulsePos >= Bat.pos && pulseVelocity >= 0)
+           result = EVENT_HIT;
+       }
+       Bat.nextEventTime = milliseconds + BAT_RISE_DELAY;
+       if(Bat.pos != Bat.endPos)
+         break;
+       Bat.state = BAT_FALL;
+     case BAT_FALL:
+       if(milliseconds < Bat.nextEventTime)
+         break;
+       if(Bat.startPos < Bat.endPos) 
+         Bat.pos--;
+       else
+         Bat.pos++;
+       if(Bat.pos != Bat.startPos)
+       {
+         Bat.nextEventTime = milliseconds + BAT_FALL_DELAY;
+         break;
+       }
+       Bat.state = BAT_RELEASE;           
+    case BAT_RELEASE:
+      if(digitalRead(Bat.inputPin) == HIGH)
+        Bat.state = BAT_WAIT;      
   }
   
-  void run(byte which, unsigned long milliseconds, CPulse *pPulse)
-  {
-    int pulsePos = pPulse->intPos();
-    switch(m_state) 
-    {
-       case BAT_WAIT:
-         if(digitalRead(m_pin) == HIGH)
-           break;   
-         gameEvent(which? EVT_SWINGA : EVT_SWINGB);
-         m_state = BAT_RISE;
-       case BAT_RISE:
-         if(milliseconds < m_nextEvent)
-           break;
-         if(m_end > m_pos) {
-           m_pos++;
-         } else {
-           m_pos--;
-         }
-         if(which)
-         {
-           if(pulsePos <= m_end)         
-             gameEvent(EVT_HITB);
-         }
-         else 
-         {
-           if(pulsePos >= m_end)         
-             gameEvent(EVT_HITA);
-         }
-         if(m_pos == m_end)
-           m_state = BAT_FALL;           
-         m_nextEvent = milliseconds + BAT_RISE_DELAY;
+  int pos = Bat.startPos;
+  for(;;) 
+  {      
+       track[pos] = Bat.colour;
+       if(pos < Bat.pos) 
+         pos++;
+       else if(pos > Bat.pos)
+         pos--;
+       else
          break;
-       case BAT_FALL:
-         if(milliseconds < m_nextEvent)
-           break;
-         if(m_start < m_pos) {
-           m_pos--;
-         } else {
-           m_pos++;
-         }
-         if(m_pos == m_start)
-           m_state = BAT_RELEASE;           
-         m_nextEvent = milliseconds + BAT_FALL_DELAY;
-         break;
-      case BAT_RELEASE:
-        if(digitalRead(m_pin) == HIGH)
-          m_state = BAT_WAIT;      
-    }
-    
-    int pos = m_start;
-    for(;;) {      
-         track[pos] = m_colour;
-         if(pos < m_pos) 
-           pos++;
-         else if(pos > m_pos)
-           pos--;
-         else
-           break;
-    }
-  }
-};
-CBat Bat0(0,5,SWITCH_A,RGB(0,254,0));
-CBat Bat1(49,44,SWITCH_B,RGB(0,0,254));
+  }    
+  return result;
+}
 
-///////////////////////////////////////////////////////////////////////
-//
-//
-//
-//
-//
-//
-// HEARTBEAT
-//
-//
-//
-//
-//
-//
-///////////////////////////////////////////////////////////////////////
-#define P_LED 18
-class CHeartBeat {
-  byte m_pin;
-  byte m_state;
-  unsigned long m_nextUpdate;
-public:
-  CHeartBeat(byte pin) {
-    m_pin = pin;
-    m_state = LOW;
-    m_nextUpdate = 0;
-    pinMode(pin,OUTPUT);
-  }
-  void run(unsigned long milliseconds) {
-    if(milliseconds > m_nextUpdate) {
-      m_nextUpdate = milliseconds + 500;
-      m_state = !m_state;
-      digitalWrite(m_pin,m_state);
+
+byte animCount;
+unsigned long nextAnimEvent;
+void animBeforeServeInit(unsigned long milliseconds) 
+{
+}
+int animBeforeServeRun(unsigned long milliseconds) 
+{
+  return 1;  
+}
+void animMissInit() 
+{
+  animCount = 0;
+  nextAnimEvent = 0;
+}
+int animMissRun(unsigned long milliseconds) 
+{
+  if(milliseconds >= nextAnimEvent)
+  {
+    nextAnimEvent = milliseconds + 20;
+    if(gameCurrentServer == 1)
+    {
+      digitalWrite(P_LIGHTS1, 0);
+      digitalWrite(P_LIGHTS2, animCount & 8);
+    }
+    else
+    {
+      digitalWrite(P_LIGHTS1, animCount & 8);
+      digitalWrite(P_LIGHTS2, 0);
+    }
+    ++animCount;
+    if(animCount > 100) 
+    {
+      digitalWrite(P_LIGHTS1, 0);
+      digitalWrite(P_LIGHTS2, 0);
+      return 1;
     }
   }
-};
-CHeartBeat HeartBeat(P_LED);
+  return 0;
+}
+
+void animGameOverInit() 
+{
+  animCount = 0;
+  nextAnimEvent = 0;
+}
+int animGameOverRun(unsigned long milliseconds) 
+{
+  if(milliseconds >= nextAnimEvent)
+  {
+    nextAnimEvent = milliseconds + 1;
+    if((animCount & 0xc0) == 0)
+    {
+      SevenSegs.showRaw(0, 0, 0);
+      SevenSegs.showRaw(1, 0, 0);          
+    }
+    else
+    {
+      SevenSegs.showNumber(0, gameScorePlayer1);
+      SevenSegs.showNumber(1, gameScorePlayer2);      
+    }  
+    digitalWrite(P_LIGHTS1, !(animCount & 0x10));
+    digitalWrite(P_LIGHTS2, !!(animCount & 0x10));    
+    animCount++;
+  }
+  return 0;
+}
+
+
+#define ATTRACT_CYCLE_MS 10
+unsigned long attractNextEvent;
+byte attractCount;
+void attractInit() 
+{
+  attractNextEvent = 0;
+  attractCount = 0;
+}
+void attractRun(unsigned long milliseconds) 
+{
+  if(milliseconds < attractNextEvent)
+    return;
+  attractNextEvent = milliseconds + ATTRACT_CYCLE_MS;
+  if((attractCount & 0x80) == 0x00)
+  {
+    SevenSegs.showRaw(1, 0, SEG_B|SEG_C);
+    SevenSegs.showRaw(0, SEG_B|SEG_C|SEG_D|SEG_E|SEG_G, 0);
+  }
+  else 
+  if((attractCount & 0x80) == 0x80)
+  {
+    SevenSegs.showRaw(1, SEG_A|SEG_B|SEG_E|SEG_F|SEG_G, SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F);
+    SevenSegs.showRaw(0, SEG_A|SEG_B|SEG_C|SEG_E|SEG_F, SEG_A|SEG_C|SEG_D|SEG_E|SEG_F);
+  }
+  analogWrite(P_LIGHTS1, attractCount<<3);
+  analogWrite(P_LIGHTS2, attractCount<<3);
+  attractCount++;  
+}
 
 
 ///////////////////////////////////////////////////////////////////////
@@ -481,127 +438,155 @@ CHeartBeat HeartBeat(P_LED);
 //
 //
 //
+// PLAYER 1
+//      low numbered LED location
+//      GREEN paddle
+//      switch locatated
+//
+//
 //
 ///////////////////////////////////////////////////////////////////////
 
 
-#define MAX_SCORE 15
-byte Player1Score = 0;
-byte Player2Score = 0;
-
-int i= 0;
-int d = 1;
-int q=0;
-byte dd =0;
-
-int gameState = 0;
-
-void refreshScores()
-{
-  SevenSegs.showNumber(0, Player1Score);
-  SevenSegs.showNumber(1, Player2Score);
-}
-
 void setup()
 {
-  pinMode(SWITCH_A,INPUT);
-  digitalWrite(SWITCH_A,HIGH);
-  pinMode(P_LED,OUTPUT);
-  digitalWrite(P_LED,LOW);  
-  delay(10);
+  
   strip.begin();
   speaker.begin(19);
-}
+  speaker.stop();
+  soundInit() ;
+  pulseInit() ;
+  attractInit();
+  batInit(Player1);
+  batInit(Player2);
+  speaker.play(1000, 5);
 
-#define MAX_SCORE 15
-unsigned long gameDelay = 0;
+  pinMode(P_LIGHTS1, OUTPUT);
+  pinMode(P_LIGHTS2, OUTPUT);  
+  digitalWrite(P_LIGHTS1, LOW);
+  digitalWrite(P_LIGHTS2, LOW);
+  
+  // ensure the random number generation does not 
+  // repeat on every reset!
+  randomSeed(EEPROM.read(0));
+  EEPROM.write(0,random(256));  
+  
+  gameCurrentServer = (random(100)>=50) ? 2 : 1;    
+  gameState = STATE_BEFORE_SERVE;
+  gameScorePlayer1 = 0;
+  gameScorePlayer2 = 0;  
+  gameStarted = 0;
 
-void gameEvent(int event)
-{
-  switch(event) {
-    case EVT_SWINGA:
-      if(gameState == GAME_SERVEA) {
-        Sounds.begin(sound_bat);
-        Pulse.init(48, -SERVE_VELOCITY);
-        gameState = GAME_RUNNING;
-      }
-      break;
-    case EVT_SWINGB:
-      if(gameState == GAME_SERVEB) {
-        Sounds.begin(sound_bat);
-        Pulse.init(1, SERVE_VELOCITY);
-        gameState = GAME_RUNNING;
-      }      
-      break;
-    case EVT_HITA:
-    case EVT_HITB:
-      Sounds.begin(sound_bat);
-      Pulse.reverse(1.05);
-      break;
-    case EVT_MISSA:
-        Player2Score++;    
-        refreshScores();
-        if(Player2Score >= MAX_SCORE)
-          gameState = GAME_OVER;
-        else      
-          gameState = GAME_SERVEA;//B
-        Sounds.begin(sound_die);
-        break;
-    case EVT_MISSB:
-        Player1Score++;    
-        refreshScores();
-        if(Player1Score >= MAX_SCORE)
-          gameState = GAME_OVER;
-        else      
-          gameState = GAME_SERVEA;
-        Sounds.begin(sound_die);
-        break;
-  }
+  
 }
 
 void loop()
 {
-  memset(track, 0, sizeof(track));
   unsigned long milliseconds = millis();
-
-  if(milliseconds > gameDelay)
-  {
-    switch(gameState)
-    {
-      // initial state on reset
-      case GAME_BEGIN:
-        Player1Score = 0;
-        Player2Score = 0;
-        refreshScores();
-        gameState = GAME_SERVEA;        
+  int player1event;
+  int player2event;
+  int pulseEvent;
+  
+  memset(track, 0, sizeof(track));
+  
+  switch(gameState)
+  {  
+    case STATE_BEFORE_SERVE:
+      memset(pulseTrail, 0, sizeof(pulseTrail));
+      if(gameStarted) 
+      {
+        SevenSegs.showNumber(0, gameScorePlayer1);
+        SevenSegs.showNumber(1, gameScorePlayer2);
+      }
+      pulsePos = (gameCurrentServer == 1)? 1 : 48;
+      pulseVelocity = 0;
+      animBeforeServeInit(milliseconds);
+      gameState = STATE_ANIM_BEFORE_SERVE;
+      // fallthru
+    case STATE_ANIM_BEFORE_SERVE:
+      if(!animBeforeServeRun(milliseconds))
         break;
-      
-      // state just before play starts
-      case GAME_SERVEA:
-        Bat0.run(0, milliseconds, &Pulse);      
-        Bat1.run(1, milliseconds, &Pulse);      
-        Pulse.pulsate(48, milliseconds);
-        break;        
-      case GAME_SERVEB:
-        Bat0.run(0, milliseconds, &Pulse);      
-        Bat1.run(1, milliseconds, &Pulse);      
-        Pulse.pulsate(1, milliseconds);
-        break;        
-      case GAME_RUNNING:
-        Pulse.run(milliseconds);
-        Bat0.run(0, milliseconds, &Pulse);      
-        Bat1.run(1, milliseconds, &Pulse);      
+      pulsateIntensity = 0;
+      gameState = STATE_WAIT_FOR_SERVE;
+      // fallthru
+    case STATE_WAIT_FOR_SERVE:
+      if(!gameStarted)
+        attractRun(milliseconds);
+      pulsate(milliseconds);
+      player1event = batRun(Player1, milliseconds);
+      player2event = batRun(Player2, milliseconds);
+      if(player1event != EVENT_HIT && player2event != EVENT_HIT)
         break;
-      case GAME_OVER:
+      pulseVelocity = (gameCurrentServer == 1)? GAME_SERVE_VELOCITY : -GAME_SERVE_VELOCITY;
+      soundStart(SOUND_SERVE);
+      gameState = STATE_PLAY;
+      gameStarted = 1;
+      gameRallyLen = 0;
+      digitalWrite(P_LIGHTS1, LOW);
+      digitalWrite(P_LIGHTS2, LOW);
+      SevenSegs.showNumber(0, gameScorePlayer1);
+      SevenSegs.showNumber(1, gameScorePlayer2);      
+      // fallthru
+    case STATE_PLAY:    
+      trailRun(milliseconds);
+      player1event = batRun(Player1, milliseconds);
+      player2event = batRun(Player2, milliseconds);
+      if(player1event == EVENT_HIT || player2event == EVENT_HIT)
+      {
+        gameRallyLen++;
+        SevenSegs.showNumberDash(1, gameRallyLen/10);
+        SevenSegs.showNumberDash(0, gameRallyLen%10);      
+        soundStart(SOUND_RETURN);  
+        pulseVelocity = -GAME_ACCELERATION * pulseVelocity;
+      }
+      pulseEvent = pulseRun(milliseconds);
+      if(pulseEvent != EVENT_MISS)
+      {
+        if(player1event == EVENT_SWING || player2event == EVENT_SWING) 
+          soundStart(SOUND_SWING);  
         break;
-    }
+      }
+      soundStart(SOUND_MISS);  
+      gameState = STATE_MISS;
+      // fallthru
+    case STATE_MISS:
+      animMissInit();
+      gameState = STATE_ANIM_MISS;
+      // fallthru
+    case STATE_ANIM_MISS:
+      if(!animMissRun(milliseconds))
+        break;
+      SevenSegs.showNumber(0, gameScorePlayer1);
+      SevenSegs.showNumber(1, gameScorePlayer2);
+      delay(200);
+      if(pulseVelocity < 0)
+      {
+        ++gameScorePlayer2;
+        SevenSegs.showNumber(1, gameScorePlayer2);
+        gameCurrentServer = 2;
+      }
+      else
+      {
+        ++gameScorePlayer1;
+        SevenSegs.showNumber(0, gameScorePlayer1);
+        gameCurrentServer = 1;
+      }                
+      if(gameScorePlayer2 < GAME_MAX_SCORE && gameScorePlayer1 < GAME_MAX_SCORE)
+      {
+        gameState = STATE_BEFORE_SERVE;
+        break;
+      }
+      gameState = STATE_GAME_OVER;
+      soundStart(SOUND_GAME_OVER);        
+      animGameOverInit();
+      // fallthru
+    case STATE_GAME_OVER:
+      animGameOverRun(milliseconds);
+      break;
   }
-
-  Sounds.run(milliseconds);
+  
+  soundRun(milliseconds);
   HeartBeat.run(milliseconds);    
   strip.set_all(track);
   strip.refresh();
 }
-
-
-
