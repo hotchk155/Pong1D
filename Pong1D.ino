@@ -156,7 +156,6 @@ float pulseVelocity;
 unsigned long trailNextEvent;
 unsigned long pulseNextEvent;
 unsigned long pulseColour;
-byte pulsateIntensity = 0;
 void pulseInit()
 {
   pulsePos = 0;
@@ -204,15 +203,6 @@ int pulseRun(unsigned long milliseconds)
   return result;
 }
 
-int pulsate(unsigned long milliseconds)
-{
-  if(milliseconds >= pulseNextEvent)  
-  {
-    track[(int)pulsePos] =  RGB(pulsateIntensity, pulsateIntensity, pulsateIntensity);        
-    pulsateIntensity+=3;  
-    pulseNextEvent = milliseconds + PULSATE_MS;
-  }
-}
 
 #define BAT_SWITCH_A 14
 #define BAT_SWITCH_B 15
@@ -336,6 +326,31 @@ int animBeforeServeRun(unsigned long milliseconds)
 {
   return 1;  
 }
+void animAwaitServeInit()
+{
+  nextAnimEvent = 0;
+  animCount = 0;
+}
+int animAwaitServeRun(unsigned long milliseconds)
+{
+  if(milliseconds >= nextAnimEvent)  
+  {
+    track[(int)pulsePos] =  RGB(animCount, animCount, animCount);        
+    animCount+=3;  
+    pulseNextEvent = milliseconds + PULSATE_MS;
+    if(gameCurrentServer == 2)
+    {
+      analogWrite(P_LIGHTS1, animCount);
+      analogWrite(P_LIGHTS2, 0);
+    }
+    else
+    {
+      analogWrite(P_LIGHTS1, 0);
+      analogWrite(P_LIGHTS2, animCount);
+    }
+  }
+}
+
 void animMissInit() 
 {
   animCount = 0;
@@ -346,18 +361,18 @@ int animMissRun(unsigned long milliseconds)
   if(milliseconds >= nextAnimEvent)
   {
     nextAnimEvent = milliseconds + 20;
-    if(gameCurrentServer == 1)
+    if(pulseVelocity < 0)
     {
-      digitalWrite(P_LIGHTS1, 0);
-      digitalWrite(P_LIGHTS2, animCount & 8);
+      digitalWrite(P_LIGHTS1, !!(animCount & 2));
+      digitalWrite(P_LIGHTS2, 0);
     }
     else
     {
-      digitalWrite(P_LIGHTS1, animCount & 8);
-      digitalWrite(P_LIGHTS2, 0);
+      digitalWrite(P_LIGHTS1, 0);
+      digitalWrite(P_LIGHTS2, !!(animCount & 2));
     }
     ++animCount;
-    if(animCount > 100) 
+    if(animCount > 50) 
     {
       digitalWrite(P_LIGHTS1, 0);
       digitalWrite(P_LIGHTS2, 0);
@@ -419,8 +434,6 @@ void attractRun(unsigned long milliseconds)
     SevenSegs.showRaw(1, SEG_A|SEG_B|SEG_E|SEG_F|SEG_G, SEG_A|SEG_B|SEG_C|SEG_D|SEG_E|SEG_F);
     SevenSegs.showRaw(0, SEG_A|SEG_B|SEG_C|SEG_E|SEG_F, SEG_A|SEG_C|SEG_D|SEG_E|SEG_F);
   }
-  analogWrite(P_LIGHTS1, attractCount<<3);
-  analogWrite(P_LIGHTS2, attractCount<<3);
   attractCount++;  
 }
 
@@ -506,13 +519,13 @@ void loop()
     case STATE_ANIM_BEFORE_SERVE:
       if(!animBeforeServeRun(milliseconds))
         break;
-      pulsateIntensity = 0;
+      animAwaitServeInit();
       gameState = STATE_WAIT_FOR_SERVE;
       // fallthru
     case STATE_WAIT_FOR_SERVE:
       if(!gameStarted)
         attractRun(milliseconds);
-      pulsate(milliseconds);
+      animAwaitServeRun(milliseconds);
       player1event = batRun(Player1, milliseconds);
       player2event = batRun(Player2, milliseconds);
       if(player1event != EVENT_HIT && player2event != EVENT_HIT)
@@ -524,8 +537,8 @@ void loop()
       gameRallyLen = 0;
       digitalWrite(P_LIGHTS1, LOW);
       digitalWrite(P_LIGHTS2, LOW);
-      SevenSegs.showNumber(0, gameScorePlayer1);
-      SevenSegs.showNumber(1, gameScorePlayer2);      
+      SevenSegs.showNumberDash(0, 0);
+      SevenSegs.showNumberDash(1, 0);      
       // fallthru
     case STATE_PLAY:    
       trailRun(milliseconds);
@@ -556,6 +569,7 @@ void loop()
     case STATE_ANIM_MISS:
       if(!animMissRun(milliseconds))
         break;
+      delay(800);
       SevenSegs.showNumber(0, gameScorePlayer1);
       SevenSegs.showNumber(1, gameScorePlayer2);
       delay(200);
